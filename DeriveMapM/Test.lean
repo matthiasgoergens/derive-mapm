@@ -1,4 +1,10 @@
-import DeriveMapM
+module
+
+public import DeriveMapM
+-- the `#guard`s and `#eval`s below run code from these imports
+meta import DeriveMapM
+
+@[expose] public section
 
 /-! Tests of `deriving MapM`: one small type per supported shape, checked on values when this file
 compiles, and the shapes it refuses, checked by their errors. -/

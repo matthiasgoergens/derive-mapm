@@ -1,5 +1,9 @@
-import DeriveMapM.Basic
-import DeriveMapM.Handler
+module
+
+public import DeriveMapM.Basic
+public import DeriveMapM.Handler
+
+@[expose] public section
 
 /-!
 # DeriveMapM

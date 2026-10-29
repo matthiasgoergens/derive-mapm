@@ -1,6 +1,11 @@
-import Lean.Elab.Deriving.Basic
-import Lean.Elab.Deriving.Util
-import DeriveMapM.Basic
+module
+
+public meta import Lean.Elab.Deriving.Basic
+public meta import Lean.Elab.Deriving.Util
+public import DeriveMapM.Basic
+
+-- all of it runs while `deriving MapM` and `deriving LawfulMapM` elaborate
+@[expose] public meta section
 
 /-!
 # The `deriving MapM` handler
@@ -192,10 +197,13 @@ def paramBinders (indVal : InductiveVal) (argNames : Array Name) :
       pure binders
 
 /-- Whether a structure is mapped by a `match` rather than its projections: when a field is of class
-type, which the code written needs bound as a local instance, or holds the structure itself, which a
-recursive call on a projection would not show to be structural. -/
+type, which the code written needs bound as a local instance, holds the structure itself, which a
+recursive call on a projection would not show to be structural, or is private, since a module's
+exposed definitions may not name a private projection. -/
 def useMatch (indVal : InductiveVal) : TermElabM Bool := do
   unless isStructure (← getEnv) indVal.name do return true
+  if let some info := getStructureInfo? (← getEnv) indVal.name then
+    if info.fieldInfo.any (isPrivateName ·.projFn) then return true
   let some ctor := indVal.ctors.head? | return true
   let ctorVal ← getConstInfoCtor ctor
   forallTelescopeReducing ctorVal.type fun xs _ => do
@@ -469,8 +477,9 @@ def lawfulMapMHandler (typeNames : Array Name) : CommandElabM Bool := do
   for typeName in typeNames do
     unless ← isInductive typeName do
       return false
-    -- `T.map_class` is a theorem when `deriving MapM` wrote it; a field of that name is a definition
-    unless (← getEnv).find? (typeName ++ `map_class) matches some (.thmInfo _) do
+    -- `T.map_class` is a theorem when `deriving MapM` wrote it; a field of that name is a definition.
+    -- Looked up in the private view: in a module's public view a theorem is an axiom.
+    unless ((← getEnv).setExporting false).find? (typeName ++ `map_class) matches some (.thmInfo _) do
       throwError "deriving LawfulMapM: {.ofConstName typeName} does not derive MapM: write \
         `deriving MapM, LawfulMapM`"
     for cmd in ← liftTermElabM (mkLawfulCommands typeName) do

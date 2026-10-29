@@ -41,18 +41,24 @@ def lookup (table : List (Nat × String)) (n : Nat) : Except String String :=
 
 ## Using it
 
-Add it to your `lakefile.toml` (the tag `v0.1.0` will be made when the repository is published):
+Add it to your `lakefile.toml`:
 
 ```toml
 [[require]]
 name = "DeriveMapM"
 git = "https://github.com/matthiasgoergens/derive-mapm"
-rev = "v0.1.0"
+rev = "v0.2.0"
 ```
 
-or, in a `lakefile.lean`, `require DeriveMapM from git "https://github.com/matthiasgoergens/derive-mapm" @ "v0.1.0"`.  Then `import DeriveMapM`.  Write `open DeriveMapM (MapM LawfulMapM)` before a `deriving` clause that names them, or write `deriving DeriveMapM.MapM`.
+or, in a `lakefile.lean`, `require DeriveMapM from git "https://github.com/matthiasgoergens/derive-mapm" @ "v0.2.0"`.  Then `import DeriveMapM` (`public import DeriveMapM` in a module).  Write `open DeriveMapM (MapM LawfulMapM)` before a `deriving` clause that names them, or write `deriving DeriveMapM.MapM`.
 
-The package pins Lean v4.35.0 (`lean-toolchain`).  It has been built, and its tests run, with v4.34.1, v4.35.0 and v4.36.0-rc1.  `lake test` builds the tests in `DeriveMapM/Test.lean`: they are checks that run while the file compiles (values compared with `#guard`, and the error of each refused shape compared with `#guard_msgs`), so a build without errors is a pass.
+The package pins Lean v4.35.0 (`lean-toolchain`) and needs at least v4.32.0: it has been built, and its tests run, with v4.32.0, v4.33.0, v4.34.1, v4.35.0 and v4.36.0-rc1.  v4.31.0 rejects the handler's code, and in v4.26.0 the `module` keyword is still experimental.  `lake test` builds the tests in `DeriveMapM/Test.lean`: they are checks that run while the file compiles (values compared with `#guard`, and the error of each refused shape compared with `#guard_msgs`), so a build without errors is a pass.
+
+## Modules
+
+Since v0.2.0 the package is written in Lean's module system: every file starts with `module`, and the handler is `meta` code, which runs while a `deriving` clause elaborates.  A module that derives `MapM` needs only `public import DeriveMapM`; the handler comes with it.  The definitions and lemmas it writes are declared where the `deriving` clause is, with that place's visibility: in an `@[expose] public section` other modules can unfold `T.map`, in a plain `public section` they get its type and the `simp` lemmas only.  A structure with a `private` field is mapped by a `match`, since a module's exposed definitions may not name a private projection.
+
+A file that is not a module imports the package as before: it loads every part of each module it imports, so it sees and can unfold everything, as with v0.1.0.
 
 ## What it writes
 
@@ -117,7 +123,6 @@ Refused, naming the type:
 - One parameter is mapped, the last.  Universe-polymorphic parameters (`ρ : Type u`) are not supported: the class is over `Type → Type`.
 - It is Functor-like, not Traversable: core Lean has no `Traversable` class, and `mapM` asks for a `Monad`, not an `Applicative`.
 - `private` types are refused rather than given private derived declarations.
-- Not tried with Lean's module system (files that begin with `module`).
 - Nested inductive types are refused rather than handled by well-founded recursion.
 
 ## Prior art
