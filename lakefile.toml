@@ -1,0 +1,11 @@
+name = "DeriveMapM"
+defaultTargets = ["DeriveMapM"]
+testDriver = "DeriveMapMTest"
+
+[[lean_lib]]
+name = "DeriveMapM"
+
+# The tests are checked when this library compiles: `lake test` (or `lake build DeriveMapMTest`).
+[[lean_lib]]
+name = "DeriveMapMTest"
+roots = ["DeriveMapM.Test"]
