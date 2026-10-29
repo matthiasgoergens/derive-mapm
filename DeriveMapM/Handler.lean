@@ -25,12 +25,13 @@ by its type:
   recursive call, which Lean checks as structural recursion;
 * a type that does not mention `ρ`: left as it is, proofs included.
 
-Anything else that mentions `ρ` is refused with an error that names the field: `ρ` under a function
-arrow or in a proposition, an argument of a type other than its last, a type without a `MapM`
-instance, the type being defined inside
-another type (a nested inductive), and a field whose type depends on a field that is mapped.  So
-are indexed and mutual families, a last parameter not of type `Type`, a type `T … ρ` not itself of
-type `Type`, a `private` type, and a type that already declares one of the names the handler writes.
+Anything else that mentions `ρ` is refused.  The errors about a field name it and its constructor
+(an unnamed field is called so): `ρ` under a function arrow or in a proposition, an argument of a
+type other than its last, a type without a `MapM` instance, and a field whose type depends on a field
+that is mapped.  The others name the type: a nested inductive type (the type being defined inside
+another type), an indexed or mutual family, a last parameter not of type `Type`, a type `T … ρ` not
+itself of type `Type`, a `private` type, and a type that already declares one of the names the
+handler writes.  Abbreviations (reducible definitions) in a field's type are unfolded first.
 
 A structure's `map` applies its constructor to its projections (`T.mk x.a (g x.b) …`), an
 inductive's is a `match` on its constructors, so that `simp [T.map]` unfolds either.
@@ -59,7 +60,15 @@ structure Ctx where
 
 /-- An error about the field `field` of the constructor `ctor`. -/
 def fieldError {α : Type} (ctor : Name) (field : Name) (msg : MessageData) : TermElabM α :=
-  throwError "deriving MapM: the field {field} of {.ofConstName ctor}: {msg}"
+  if field.hasMacroScopes then
+    throwError "deriving MapM: an unnamed field of {.ofConstName ctor}: {msg}"
+  else
+    throwError "deriving MapM: the field {field} of {.ofConstName ctor}: {msg}"
+
+/-- The type of a field as the handler reads it: without `optParam` and `autoParam`, and with the
+reducible definitions (`abbrev`s) at its head unfolded. -/
+def fieldType (τ : Expr) : MetaM Expr := do
+  whnfR (← instantiateMVars τ).cleanupAnnotations
 
 /-- `bind e fun b => k b` for a monadic image, or `k e` for a pure one, so that a pure image is a
 term and a monadic one a chain of binds that ends in `pure`. -/
@@ -74,13 +83,18 @@ def bindImage (c : Ctx) (e : Term) (k : Term → TermElabM Term) : TermElabM Ter
 /-- The term that maps `a : τ`, for a `τ` that mentions `ρ`: of type `τ[σ/ρ]` when pure, `m τ[σ/ρ]`
 when monadic.  `top` is whether `a` is a field itself, where a recursive occurrence of the type may
 stand. -/
-def image (c : Ctx) (ctor field : Name) : Expr → Term → Bool → TermElabM Term
+partial def image (c : Ctx) (ctor field : Name) (τ : Expr) (a : Term) (top : Bool) : TermElabM Term := do
+  imageOf (← fieldType τ) a top
+where
+  imageOf : Expr → Term → Bool → TermElabM Term
   | .fvar x, a, _ => do
     if x == c.rho then `($(c.g) $a)
     else fieldError ctor field m!"unexpected variable in its type"
   | .app (.app (.const ``Prod _) α) β, a, _ => do
     let fst ← `($(mkCIdent ``Prod.fst) $a)
     let snd ← `($(mkCIdent ``Prod.snd) $a)
+    let α ← fieldType α
+    let β ← fieldType β
     let fst' ← if α.containsFVar c.rho then some <$> image c ctor field α fst false else pure none
     let snd' ← if β.containsFVar c.rho then some <$> image c ctor field β snd false else pure none
     let finish (x y : Term) : TermElabM Term := do
@@ -135,7 +149,7 @@ def ctorImage (c : Ctx) (ctor : Name) (paramArgs : Array Term) (sigma : Ident) (
   for (x, a) in fields.zip args do
     let .fvar id := x | throwError "deriving MapM: a field of {.ofConstName ctor} is not a variable"
     let decl ← id.getDecl
-    let τ := (← instantiateMVars decl.type).cleanupAnnotations
+    let τ ← fieldType decl.type
     if mapped.any τ.containsFVar then
       fieldError ctor decl.userName m!"its type depends on a field that is mapped"
     if τ.containsFVar c.rho then
@@ -155,10 +169,6 @@ def ctorImage (c : Ctx) (ctor : Name) (paramArgs : Array Term) (sigma : Ident) (
     | (some e, _) :: rest, acc => bindImage c e fun b => go rest (acc.push b)
     | (none, a) :: rest, acc => go rest (acc.push a)
   go (images.zip args).toList #[]
-
-/-- A doc comment of the text `text`. -/
-def docComment (text : String) : TSyntax ``Parser.Command.docComment :=
-  ⟨mkNode ``Parser.Command.docComment #[mkAtom "/--", mkAtom (text ++ " -/")]⟩
 
 /-- The binders of the parameters before the one mapped, named `argNames`: implicit, but an instance
 parameter as an instance binder with its type, so that the code written can use it. -/
@@ -182,7 +192,8 @@ def paramBinders (indVal : InductiveVal) (argNames : Array Name) :
       pure binders
 
 /-- Whether a structure is mapped by a `match` rather than its projections: when a field is of class
-type, which the code written needs bound as a local instance. -/
+type, which the code written needs bound as a local instance, or holds the structure itself, which a
+recursive call on a projection would not show to be structural. -/
 def useMatch (indVal : InductiveVal) : TermElabM Bool := do
   unless isStructure (← getEnv) indVal.name do return true
   let some ctor := indVal.ctors.head? | return true
@@ -190,6 +201,7 @@ def useMatch (indVal : InductiveVal) : TermElabM Bool := do
   forallTelescopeReducing ctorVal.type fun xs _ => do
     for x in xs.extract indVal.numParams xs.size do
       if (← isClass? (← inferType x)).isSome then return true
+      if (← fieldType (← inferType x)).isAppOf indVal.name then return true
     return false
 
 /-- The definition of `T.map` or `T.mapM`. -/
@@ -216,14 +228,12 @@ def mkFunction (indVal : InductiveVal) (mode : Mode) : TermElabM Command := do
   let name := mkIdent (`_root_ ++ fnName)
   match mode with
   | .pure =>
-    let doc := docComment s!"The value with each value of its last parameter mapped by `g` (`deriving MapM`)."
-    `($doc:docComment
+    `(/-- The value with each value of its last parameter mapped by `g` (`deriving MapM`). -/
       def $name $otherBinders:bracketedBinder* {$rho $sigma : Type} ($g : $rho → $sigma) ($x : $source) :
         $target := $body)
   | .monadic =>
-    let doc := docComment s!"The value with each value of its last parameter mapped by `g` in the monad, in \
-      the order of the fields (`deriving MapM`)."
-    `($doc:docComment
+    `(/-- The value with each value of its last parameter mapped by `g` in the monad, in the order of
+        the fields (`deriving MapM`). -/
       def $name $otherBinders:bracketedBinder* {$rho $sigma : Type} {$m : Type → Type} [Monad $m]
         ($g : $rho → $m $sigma) ($x : $source) : $m $target := $body)
 where
@@ -275,7 +285,8 @@ def checkShape (indVal : InductiveVal) (names : List Name := mapMNames) : TermEl
   forallBoundedTelescope indVal.type indVal.numParams fun xs sort => do
     let some rho := xs.back? | throwError "deriving MapM: {.ofConstName indVal.name} has no parameter"
     unless (← whnf (← inferType rho)) == mkSort Level.one do
-      throwError "deriving MapM: the last parameter of {.ofConstName indVal.name} is not of type Type"
+      throwError "deriving MapM: the last parameter of {.ofConstName indVal.name} has type \
+        {← inferType rho}, not Type"
     unless (← whnf sort) == mkSort Level.one do
       throwError "deriving MapM: {.ofConstName indVal.name} applied to its parameters is of type {sort}, \
         not Type"
@@ -318,10 +329,10 @@ def mkCommands (typeName : Name) : TermElabM (Array Command) := do
       mapM := $mapM)
   let functorInst ← `(instance $binders:bracketedBinder* : Functor $F where
       map := $map)
-  let mapEq ← `($(docComment "The class's `map` is the derived one (`deriving MapM`)."):docComment
+  let mapEq ← `(/-- The class's `map` is the derived one (`deriving MapM`). -/
     @[simp] theorem $mapClass $binders:bracketedBinder* {$a $b : Type} ($g : $a → $b) ($x : $F $a) :
       $(mkCIdent ``MapM.map) $g $x = $map $g $x := rfl)
-  let mapMEq ← `($(docComment "The class's `mapM` is the derived one (`deriving MapM`)."):docComment
+  let mapMEq ← `(/-- The class's `mapM` is the derived one (`deriving MapM`). -/
     @[simp] theorem $mapMClass $binders:bracketedBinder* {$a $b : Type} {$m : Type → Type} [Monad $m]
       ($g : $a → $m $b) ($x : $F $a) : $(mkCIdent ``MapM.mapM) $g $x = $mapM $g $x := rfl)
   pure #[mapFn, mapMFn, mapMInst, functorInst, mapEq, mapMEq]
@@ -338,12 +349,15 @@ def mapMHandler (typeNames : Array Name) : CommandElabM Bool := do
 
 /-- The type functions `F` through which a field of type `τ` is mapped (`image`), the parameter `rho`
 in their argument. -/
-def containers (rho : FVarId) : Expr → Array Expr
+partial def containers (rho : FVarId) (τ : Expr) : MetaM (Array Expr) := do
+  match ← fieldType τ with
   | .app (.app (.const ``Prod _) α) β =>
-    (if α.containsFVar rho then containers rho α else #[]) ++
-      (if β.containsFVar rho then containers rho β else #[])
-  | .app f x => if x.containsFVar rho && !f.containsFVar rho then #[f] ++ containers rho x else #[]
-  | _ => #[]
+    let l ← if α.containsFVar rho then containers rho α else pure #[]
+    let r ← if β.containsFVar rho then containers rho β else pure #[]
+    pure (l ++ r)
+  | .app f x =>
+    if x.containsFVar rho && !f.containsFVar rho then pure (#[f] ++ (← containers rho x)) else pure #[]
+  | _ => pure #[]
 
 /-- Refuses a type whose fields hold the parameter inside a type function without a `LawfulMapM`
 instance, whose laws the proofs of `deriving LawfulMapM` need. -/
@@ -355,12 +369,16 @@ def checkLawfulFields (indVal : InductiveVal) : TermElabM Unit := do
       for x in xs.extract indVal.numParams xs.size do
         let .fvar id := x | pure ()
         let decl ← id.getDecl
-        for f in containers rho (← instantiateMVars decl.type).cleanupAnnotations do
+        for f in ← containers rho decl.type do
           if f.isAppOf indVal.name then continue
           let found ← match ← synthInstance? (mkApp (mkConst ``MapM) f) with
             | some inst => pure (← synthInstance? (mkApp2 (mkConst ``LawfulMapM) f inst)).isSome
             | none => pure false
           unless found do
+            if f.isFVar then
+              throwError "deriving LawfulMapM: the field {decl.userName} of {MessageData.ofConstName ctor} \
+                holds the type parameter {f}, whose laws the proofs cannot assume: deriving LawfulMapM \
+                does not support it"
             throwError "deriving LawfulMapM: the field {decl.userName} of {MessageData.ofConstName ctor} \
               holds {f}, which has no LawfulMapM instance: derive LawfulMapM for it first"
 
@@ -378,10 +396,13 @@ def lawBody (indVal : InductiveVal) (x : Ident) (rhs : Array Term → TermElabM 
     let ctorVal ← getConstInfoCtor ctor
     forallTelescopeReducing ctorVal.type fun xs _ => do
       let fields := xs.extract indVal.numParams xs.size
+      let some (.fvar rho) := (xs.extract 0 indVal.numParams).back? | throwError "deriving MapM: \
+        {.ofConstName indVal.name} has no parameter"
       let names ← fields.mapM fun _ => do pure (mkIdent (← mkFreshUserName `a))
       let mut recs : Array Term := #[]
       for (field, n) in fields.zip names do
-        if (← inferType field).isAppOf indVal.name then recs := recs.push n
+        let τ ← fieldType (← inferType field)
+        if τ.isAppOf indVal.name && τ.containsFVar rho then recs := recs.push n
       let holes ← (Array.range indVal.numParams).mapM fun _ => `(_)
       let pat ← `(@$(mkCIdent ctor) $holes* $names*)
       `(Parser.Term.matchAltExpr| | $pat => $(← rhs recs))
@@ -418,19 +439,19 @@ def mkLawfulCommands (typeName : Name) : TermElabM (Array Command) := do
   let lawId := mkCIdent ``LawfulMapM.map_id
   let lawMap := mkCIdent ``LawfulMapM.map_map
   let lawMId := mkCIdent ``LawfulMapM.mapM_id
-  let mapIdThm ← `($(docComment "`map` keeps a value under the identity (`deriving LawfulMapM`)."):docComment
+  let mapIdThm ← `(/-- `map` keeps a value under the identity (`deriving LawfulMapM`). -/
     @[simp] theorem $(mkIdent (`_root_ ++ mapId)) $binders:bracketedBinder* {$a : Type} :
         ∀ ($x : $F $a), $map (fun $y => $y) $x = $x :=
       $(← lawBody indVal x fun recs => do
           let recs ← recs.mapM fun r => `($(mkIdent mapId) $r)
           simpBy (#[(map : Term), lawId] ++ recs)))
-  let mapMapThm ← `($(docComment "`map` composes (`deriving LawfulMapM`)."):docComment
+  let mapMapThm ← `(/-- `map` composes (`deriving LawfulMapM`). -/
     @[simp] theorem $(mkIdent (`_root_ ++ mapMap)) $binders:bracketedBinder* {$a $b $c : Type} ($g : $a → $b)
         ($h : $b → $c) : ∀ ($x : $F $a), $map $h ($map $g $x) = $map (fun $y => $h ($g $y)) $x :=
       $(← lawBody indVal x fun recs => do
           let recs ← recs.mapM fun r => `($(mkIdent mapMap) $g $h $r)
           simpBy (#[(map : Term), comp, lawMap] ++ recs)))
-  let mapMIdThm ← `($(docComment "`mapM` in `Id` is `map` (`deriving LawfulMapM`)."):docComment
+  let mapMIdThm ← `(/-- `mapM` in `Id` is `map` (`deriving LawfulMapM`). -/
     @[simp] theorem $(mkIdent (`_root_ ++ mapMId)) $binders:bracketedBinder* {$a $b : Type} ($g : $a → $b) :
         ∀ ($x : $F $a), $mapM (m := Id) (fun $y => pure ($g $y)) $x = pure ($map $g $x) :=
       $(← lawBody indVal x fun recs => do
@@ -448,7 +469,8 @@ def lawfulMapMHandler (typeNames : Array Name) : CommandElabM Bool := do
   for typeName in typeNames do
     unless ← isInductive typeName do
       return false
-    unless (← getEnv).contains (typeName ++ `map_class) do
+    -- `T.map_class` is a theorem when `deriving MapM` wrote it; a field of that name is a definition
+    unless (← getEnv).find? (typeName ++ `map_class) matches some (.thmInfo _) do
       throwError "deriving LawfulMapM: {.ofConstName typeName} does not derive MapM: write \
         `deriving MapM, LawfulMapM`"
     for cmd in ← liftTermElabM (mkLawfulCommands typeName) do

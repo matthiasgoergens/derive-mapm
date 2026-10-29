@@ -1,30 +1,42 @@
 # DeriveMapM
 
-A deriving handler for Lean 4 that writes `map`, `mapM`, a `Functor` instance and the functor laws for a structure or an inductive type, over its last type parameter.  It is the counterpart of Haskell's `deriving (Functor, Traversable)`, and of the handlers in Mathlib, for projects that do not depend on Mathlib.  It needs Lean core alone: no Mathlib, no Batteries.
+A deriving handler for Lean 4 that writes `map` and `mapM` for a structure or an inductive type, over its last type parameter, and can prove that they obey the functor laws.  It is in the spirit of Haskell's `deriving (Functor, Traversable)`, for projects that do not depend on Mathlib: it needs Lean core alone, no Mathlib and no Batteries.
 
-The handler writes syntax, as core's own deriving handlers do, and writes the definitions so that `simp [T.map]` unfolds them down to `Array.map`, `Option.map` and the other types' own `map`.
+`MapM` and `LawfulMapM` are classes that this package defines (in `DeriveMapM.Basic`), not part of Lean core.  `MapM f` says how to map the values of type `α` inside an `f α`, purely (`map`) or in a monad (`mapM`).  `LawfulMapM f` adds the laws.  `deriving MapM` gives a type a `MapM` instance and a `Functor` instance; the laws come only with `deriving LawfulMapM`, which goes after it.
 
 ```lean
 import DeriveMapM
 open DeriveMapM (MapM LawfulMapM)
 
-inductive Ref (ρ : Type) where
-  | record (id : ρ)
-  | candidate (asked : ρ) (label : String)
+inductive Tree (ρ : Type) where
+  | leaf (value : ρ)
+  | node (left right : Tree ρ)
   deriving MapM, LawfulMapM, Repr
 
-structure Edge (ρ : Type) where
-  source : ρ
-  targets : Array (Ref ρ)
-  weights : List (ρ × Nat)
+structure Entry (ρ : Type) where
+  key : ρ
+  trees : Array (Tree ρ)
+  counts : List (ρ × Nat)
   note : Option String
   deriving MapM, LawfulMapM, Repr
 
--- pure
-#eval ({ source := 1, targets := #[.record 2], weights := [(3, 7)], note := none } : Edge Nat).map toString
--- in a monad, failing at the first id that does not resolve
-def resolve (n : Nat) : Except String String := if n < 10 then .ok s!"#{n}" else .error s!"no record {n}"
-#eval ({ source := 1, targets := #[.candidate 12 "a"], weights := [], note := none } : Edge Nat).mapM resolve
+def entry : Entry Nat :=
+  { key := 1, trees := #[.node (.leaf 2) (.leaf 3)], counts := [(4, 7)], note := none }
+
+-- Pure: apply a function to every `Nat` that the `Entry` holds (the `7` is a different `Nat`, not a `ρ`).
+#eval entry.map toString
+-- { key := "1", trees := #[Tree.node (Tree.leaf "2") (Tree.leaf "3")], counts := [("4", 7)], note := none }
+
+-- In a monad: look every value up, stopping at the first one that is missing.
+def lookup (table : List (Nat × String)) (n : Nat) : Except String String :=
+  match table.lookup n with
+  | some s => .ok s
+  | none => .error s!"no entry {n}"
+
+#eval entry.mapM (lookup [(1, "one"), (2, "two"), (3, "three"), (4, "four")])
+-- Except.ok { key := "one", trees := #[Tree.node (Tree.leaf "two") (Tree.leaf "three")], counts := [("four", 7)], note := none }
+#eval entry.mapM (lookup [(1, "one"), (2, "two")])
+-- Except.error "no entry 3"
 ```
 
 ## Using it
@@ -40,42 +52,62 @@ rev = "v0.1.0"
 
 or, in a `lakefile.lean`, `require DeriveMapM from git "https://github.com/matthiasgoergens/derive-mapm" @ "v0.1.0"`.  Then `import DeriveMapM`.  Write `open DeriveMapM (MapM LawfulMapM)` before a `deriving` clause that names them, or write `deriving DeriveMapM.MapM`.
 
-The package is built and tested with Lean v4.35.0 (`lean-toolchain`); `lake test` runs the tests in `DeriveMapM/Test.lean`.  It has not been tried with other versions.
+The package pins Lean v4.35.0 (`lean-toolchain`).  It has been built, and its tests run, with v4.34.1, v4.35.0 and v4.36.0-rc1.  `lake test` builds the tests in `DeriveMapM/Test.lean`: they are checks that run while the file compiles (values compared with `#guard`, and the error of each refused shape compared with `#guard_msgs`), so a build without errors is a pass.
 
 ## What it writes
 
 For a type `T … ρ` whose last parameter `ρ : Type` is the one mapped, `deriving MapM` defines, in `T`'s namespace:
 
-- `T.map (g : α → β) : T … α → T … β`, a structural map (a `match` on the constructors of an inductive type; the projections of a structure);
-- `T.mapM [Monad m] (g : α → m β) : T … α → m (T … β)`, which runs the effects of `g` in the order of the fields, the elements of an array or a list from first to last;
+- `T.map (g : α → β) : T … α → T … β`: a `match` on the constructors for an inductive type, and the constructor applied to the projections for a structure;
+- `T.mapM [Monad m] (g : α → m β) : T … α → m (T … β)`, which runs the effects of `g` in the order of the fields, and the elements of an array or a list from first to last;
 - the instances `MapM (T …)` and `Functor (T …)`;
-- the `simp` lemmas `T.map_class` and `T.mapM_class`, which turn `MapM.map` and `MapM.mapM` at `T` into `T.map` and `T.mapM`, so that `simp [T.map]` unfolds a derived map down to `Array.map`, `Option.map` and the other types' own `map`.
+- the `simp` lemmas `T.map_class` and `T.mapM_class`, which turn `MapM.map` and `MapM.mapM` at `T` into `T.map` and `T.mapM`.
 
-Calls such as `x.map g` and `x.mapM g` resolve to them by dot notation.  Parameters before `ρ` stay as they are; an instance parameter among them (`structure Wrap (F : Type → Type) [MapM F] (ρ : Type)`) stays an instance, so a field's `MapM` instance may rest on it, or on a constructor field of class type (`[inst : BEq κ]`).
+`simp [T.map]` then unfolds a derived map down to `Array.map`, `Option.map` and the other types' own `map`.  Calls such as `x.map g` and `x.mapM g` resolve by dot notation.  Parameters before `ρ` stay as they are.  An instance parameter among them (`structure Wrap (F : Type → Type) [MapM F] (ρ : Type)`) stays an instance, so a field's `MapM` instance may rest on it.  The same holds for a constructor field of class type, as in this tiny example, where mapping `Keyed` needs `BEq κ` for the hand-written `MapM (Assoc κ)`:
 
-`deriving LawfulMapM`, after `deriving MapM` (`deriving MapM, LawfulMapM`), proves, as `simp` lemmas, `T.map_id` (`x.map (fun a => a) = x`), `T.map_map` (`(x.map g).map h = x.map (fun a => h (g a))`) and `T.mapM_id` (`mapM` in `Id` of a pure function is `map`), and gives the instance `LawfulMapM (T …)`.  The proofs go by structural recursion and `simp` on each constructor, leaving the constructor's proof fields out of the simp set, and need the laws of the types the fields hold: `Option`, `List`, `Array`, those that derive `LawfulMapM`, and instances of `LawfulMapM` written by hand; the handler refuses a field that holds the parameter in a type without a `LawfulMapM` instance.
+```lean
+structure Assoc (κ ρ : Type) where
+  pairs : Array (κ × ρ)
+
+instance {κ : Type} [BEq κ] : MapM (Assoc κ) where
+  map g a := ⟨a.pairs.map fun (k, r) => (k, g r)⟩
+  mapM g a := do return ⟨← a.pairs.mapM fun (k, r) => do return (k, ← g r)⟩
+
+inductive Keyed (κ ρ : Type) where
+  | mk [inst : BEq κ] (entries : Assoc κ ρ)
+  deriving MapM
+```
+
+`deriving LawfulMapM`, after `deriving MapM` (write `deriving MapM, LawfulMapM`), proves three lemmas and gives the instance `LawfulMapM (T …)`.  The lemmas are `T.map_id` (`x.map (fun a => a) = x`), `T.map_map` (`(x.map g).map h = x.map (fun a => h (g a))`) and `T.mapM_id` (`mapM` in `Id` of a pure function is `map`), all marked `@[simp]`.  The proofs go constructor by constructor, with `simp` and the same lemmas for the fields that hold the type itself.  They do not use the fields that are proofs.  They need the laws of the types that the fields hold: `Option`, `List`, `Array`, types that derive `LawfulMapM`, and `LawfulMapM` instances written by hand.  The handler refuses a field that holds the parameter in a type without a `LawfulMapM` instance.
 
 ## Supported shapes
 
-A field is mapped by its type:
+A field is mapped according to its type:
 
 - `ρ`: by `g`;
-- `F τ` where `F : Type → Type` does not mention `ρ` and has a `MapM` instance (`Option`, `List`, `Array`, any type that derives `MapM`, or an instance written by hand): by `MapM.map`, mapping each `τ` inside the same way, so `Array (Option (Ref ρ))` works;
+- `F τ`, where `F : Type → Type` does not mention `ρ` and has a `MapM` instance (`Option`, `List`, `Array`, any type that derives `MapM`, or an instance written by hand): by `MapM.map`, mapping each `τ` inside in the same way, so `Array (Option (Tree ρ))` works;
 - `α × β`: each side that mentions `ρ`, nested pairs included;
-- `T … ρ` itself as a field (not inside another type): by a recursive call, which Lean checks as structural recursion;
+- `T … ρ` itself as a field (not inside another type): by a recursive call that Lean accepts without a termination argument;
 - a type that does not mention `ρ`, functions and proofs included: left as it is.
 
-Several constructors, constructors without arguments, and fields whose types depend on earlier fields that are not mapped (a proof that a list is non-empty, say) are fine.
+Abbreviations (`abbrev`, or other reducible definitions) in a field's type are unfolded first.  Several constructors, constructors without arguments, and fields whose types depend on earlier fields that are not mapped (a proof that a list is non-empty, say) are fine.  A structure that `extends` another works when the parent derives `MapM` too (and `LawfulMapM`, for the laws), because the parent is a field.
 
 ## Refused shapes
 
-The handler refuses, with an error that names the field and the reason:
+Every refusal is an error at the `deriving` clause with a message that gives the reason.  Errors about one field name the field and its constructor (a field without a name is called an unnamed field); errors about the whole type name the type.
+
+Refused, naming the field:
 
 - `ρ` under a function arrow (`Nat → ρ`);
 - `ρ` as an argument other than the last (`Except ρ Nat`);
-- a type without a `MapM` instance (`Thunk ρ`);
+- a type without a `MapM` instance (`Thunk ρ`), including a parent structure that does not derive `MapM`;
 - a field whose type depends on a field that is mapped (`h : xs.size > 0` after `xs : Array ρ`), and a proposition that mentions `ρ` in any other way;
-- the type being defined inside another type (a nested inductive type such as `node : Array (Tree ρ) → Tree ρ`), mutual families, indexed families, a last parameter that is not of type `Type`, and a type `T … ρ` that is not itself of type `Type` (a structure with a field `t : Type` or `inst : MapM F`, a proposition);
+- `deriving LawfulMapM` on a field that holds the parameter in a type without a `LawfulMapM` instance, including a type parameter such as `F` in `structure Wrap (F : Type → Type) [MapM F] (ρ : Type)`: its laws cannot be assumed, so `deriving MapM` works for `Wrap` and `deriving LawfulMapM` does not.
+
+Refused, naming the type:
+
+- a nested inductive type, one that holds itself inside another type (`node : Array (Tree ρ) → Tree ρ`), mutual families and indexed families;
+- a last parameter that is not of type `Type` (`ρ : Type u`, say), and a type `T … ρ` that is not itself of type `Type` (a structure with a field `t : Type` or `inst : MapM F`, a proposition);
 - a type that already declares one of the names the handler writes (a field named `map` or `map_class`, say);
 - a `private` type;
 - `deriving LawfulMapM` on a type that does not derive `MapM` first, a hand-written instance included.
@@ -83,14 +115,14 @@ The handler refuses, with an error that names the field and the reason:
 ## Limits
 
 - One parameter is mapped, the last.  Universe-polymorphic parameters (`ρ : Type u`) are not supported: the class is over `Type → Type`.
-- No `Traversable` (core Lean has no such class): `mapM` asks for a `Monad`, not an `Applicative`.
+- It is Functor-like, not Traversable: core Lean has no `Traversable` class, and `mapM` asks for a `Monad`, not an `Applicative`.
 - `private` types are refused rather than given private derived declarations.
 - Not tried with Lean's module system (files that begin with `module`).
 - Nested inductive types are refused rather than handled by well-founded recursion.
 
 ## Prior art
 
-Mathlib's [`Mathlib/Tactic/DeriveTraversable.lean`](https://github.com/leanprover-community/mathlib4/blob/master/Mathlib/Tactic/DeriveTraversable.lean) derives `Functor`, `Traversable` and their lawful versions, building the definitions as expressions and mapping nested fields through `Functor` instances.  It depends on Mathlib's `Traversable` hierarchy.  DeriveMapM covers the same ground for users who do not depend on Mathlib, generates syntax rather than expressions (as core's own deriving handlers do), maps through pairs, and writes the definitions so that `simp [T.map]` unfolds them.
+Mathlib's [`Mathlib/Tactic/DeriveTraversable.lean`](https://github.com/leanprover-community/mathlib4/blob/master/Mathlib/Tactic/DeriveTraversable.lean) derives `Functor`, `Traversable` (Haskell's class for a `mapM` over any `Applicative`) and their lawful versions, building the definitions as expressions and mapping nested fields through `Functor` instances.  It depends on Mathlib's `Traversable` hierarchy.  DeriveMapM covers the map and the monadic map for users who do not depend on Mathlib, generates syntax rather than expressions (as core's own deriving handlers do), and maps through pairs.
 
 ## Licence
 

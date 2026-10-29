@@ -28,7 +28,8 @@ class LawfulMapM (f : Type → Type) [MapM f] : Prop where
   map_id {α : Type} (x : f α) : MapM.map (fun a => a) x = x
   map_map {α β γ : Type} (g : α → β) (h : β → γ) (x : f α) :
     MapM.map h (MapM.map g x) = MapM.map (fun a => h (g a)) x
-  mapM_id {α β : Type} (g : α → β) (x : f α) : MapM.mapM (m := Id) (fun a => pure (g a)) x = pure (MapM.map g x)
+  mapM_id {α β : Type} (g : α → β) (x : f α) :
+    MapM.mapM (m := Id) (fun a => pure (g a)) x = pure (MapM.map g x)
 
 instance : MapM Option where
   map := Option.map
@@ -57,7 +58,8 @@ variable {α β : Type}
 
 /-- `Option.mapM` of a pure function is pure (the counterpart of `List.mapM_pure` and
 `Array.mapM_pure`). -/
-@[simp] theorem option_mapM_pure {m : Type → Type} [Monad m] [LawfulMonad m] (g : α → β) (x : Option α) :
+@[simp] theorem option_mapM_pure {m : Type → Type} [Monad m] [LawfulMonad m] (g : α → β)
+    (x : Option α) :
     x.mapM (fun a => (pure (g a) : m β)) = pure (x.map g) := by
   cases x <;> simp
 
@@ -74,7 +76,10 @@ instance : LawfulMapM List where
   mapM_id g xs := by
     induction xs with
     | nil => rfl
-    | cons x xs ih => simp only [mapM_list, map_list, List.mapM_cons, List.map_cons] at ih ⊢; rw [ih]; rfl
+    | cons x xs ih =>
+      simp only [mapM_list, map_list, List.mapM_cons, List.map_cons] at ih ⊢
+      rw [ih]
+      rfl
 
 instance : LawfulMapM Array where
   map_id xs := by simp

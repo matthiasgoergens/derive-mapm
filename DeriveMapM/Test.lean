@@ -189,7 +189,7 @@ inductive Tree (ρ : Type) where
   deriving MapM
 
 /--
-error: deriving MapM: the last parameter of NotAType is not of type Type
+error: deriving MapM: the last parameter of NotAType has type Nat, not Type
 -/
 #guard_msgs in
 structure NotAType (n : Nat) where
@@ -197,7 +197,7 @@ structure NotAType (n : Nat) where
   deriving MapM
 
 /--
-error: deriving MapM: the last parameter of Polymorphic is not of type Type
+error: deriving MapM: the last parameter of Polymorphic has type Type u, not Type
 -/
 #guard_msgs in
 structure Polymorphic.{u} (ρ : Type u) where
@@ -265,35 +265,162 @@ structure Dependent (ρ : Type) where
   deriving MapM
 
 
+/-! The shapes that stopped working, or were refused with a poor message, in a review. -/
+
+/-- Type abbreviations are unfolded: one for the parameter, one for a pair, and one that leaves it out. -/
+abbrev Key (ρ : Type) := ρ
+abbrev Pair (α β : Type) := α × β
+abbrev Ignore (_ : Type) := Nat
+
+structure Aliased (ρ : Type) where
+  key : Key ρ
+  pair : Pair ρ Nat
+  other : Pair Nat ρ
+  keys : Array (Key ρ)
+  ignored : Ignore ρ
+  deriving MapM, LawfulMapM, BEq
+
+#guard ({ key := 1, pair := (2, 3), other := (4, 5), keys := #[6], ignored := 7 } : Aliased Nat).map (· + 1) ==
+  ({ key := 2, pair := (3, 3), other := (4, 6), keys := #[7], ignored := 7 } : Aliased Nat)
+
+/-- A structure that holds itself is mapped by a `match`, not by recursion on a projection. -/
+structure Stream (ρ : Type) where
+  head : ρ
+  tail : Stream ρ
+  deriving MapM
+
+/-- A parent structure must derive `MapM` first. -/
+structure Parent (ρ : Type) where
+  r : ρ
+  deriving MapM, LawfulMapM
+
+structure Child (ρ : Type) extends Parent ρ where
+  extra : Nat
+  deriving MapM, LawfulMapM
+
+#guard ((Child.mk ⟨1⟩ 2).map (· + 1)).r == 2
+
+/-- Pairs without the parameter inside a pair, and a lawful type applied to a pair. -/
+structure Wrapped (ρ : Type) where
+  inner : (Nat × Nat) × ρ
+  opt : Option (ρ × Nat)
+  deriving MapM, LawfulMapM
+
+structure Applied (ρ : Type) where
+  w : Wrapped (ρ × Nat)
+  ws : Option (Wrapped ρ)
+  deriving MapM, LawfulMapM
+
+/-- Parameters named like the names the handler binds, and a section variable. -/
+structure Names (α β x : Type) (ρ : Type) where
+  a : α
+  r : ρ
+  b : List β
+  c : x
+  deriving MapM, LawfulMapM
+
+/-- An instance parameter whose type projects from an earlier parameter. -/
+structure Projected (p : Type × Type) [BEq p.1] (ρ : Type) where
+  r : ρ
+  k : Option p.1
+  deriving MapM
+
+/-- A public structure with a private field. -/
+structure PrivateField (ρ : Type) where
+  private secret : Nat
+  val : ρ
+  deriving MapM
+
+#guard ((PrivateField.mk 1 2).map (· + 1)).val == 3
+
+/-! A field named like a lemma of `deriving MapM` does not stand in for `deriving MapM`. -/
+
+/--
+error: deriving LawfulMapM: OnlyLawful does not derive MapM: write `deriving MapM, LawfulMapM`
+-/
+#guard_msgs in
+structure OnlyLawful (ρ : Type) where
+  map_class : ρ
+  deriving LawfulMapM
+
+/--
+error: deriving MapM: an unnamed field of Unnamed.f: the parameter appears under a function arrow
+-/
+#guard_msgs in
+inductive Unnamed (ρ : Type) where
+  | f : (Nat → ρ) → Unnamed ρ
+  deriving MapM
+
+/--
+error: deriving LawfulMapM: the field xs of Parametrised.mk holds the type parameter F, whose laws the proofs cannot assume: deriving LawfulMapM does not support it
+-/
+#guard_msgs in
+structure Parametrised (F : Type → Type) [MapM F] (ρ : Type) where
+  xs : F ρ
+  deriving MapM, LawfulMapM
+
+/--
+error: deriving MapM: Even is one of a mutual family, which is not supported
+-/
+#guard_msgs in
+mutual
+inductive Even (ρ : Type) where
+  | zero
+  | succ (r : ρ) (o : Odd ρ)
+  deriving MapM
+inductive Odd (ρ : Type) where
+  | succ (r : ρ) (e : Even ρ)
+end
+
+/--
+error: deriving MapM: Vec is an indexed family, which is not supported
+-/
+#guard_msgs in
+inductive Vec (ρ : Type) : Nat → Type where
+  | nil : Vec ρ 0
+  | cons (r : ρ) (v : Vec ρ n) : Vec ρ (n + 1)
+  deriving MapM
+
+
 /-! The example of the README. -/
 
 namespace Readme
 
-inductive Ref (ρ : Type) where
-  | record (id : ρ)
-  | candidate (asked : ρ) (label : String)
+inductive Tree (ρ : Type) where
+  | leaf (value : ρ)
+  | node (left right : Tree ρ)
   deriving MapM, LawfulMapM, DecidableEq, Repr
 
-structure Edge (ρ : Type) where
-  source : ρ
-  targets : Array (Ref ρ)
-  weights : List (ρ × Nat)
+structure Entry (ρ : Type) where
+  key : ρ
+  trees : Array (Tree ρ)
+  counts : List (ρ × Nat)
   note : Option String
   deriving MapM, LawfulMapM, DecidableEq, Repr
 
-def resolve (n : Nat) : Except String String := if n < 10 then .ok s!"#{n}" else .error s!"no record {n}"
+def entry : Entry Nat :=
+  { key := 1, trees := #[.node (.leaf 2) (.leaf 3)], counts := [(4, 7)], note := none }
 
-#guard ({ source := 1, targets := #[.record 2], weights := [(3, 7)], note := none } : Edge Nat).map toString ==
-  { source := "1", targets := #[.record "2"], weights := [("3", 7)], note := none }
-#guard match ({ source := 1, targets := #[.candidate 12 "a"], weights := [], note := none } : Edge Nat).mapM
-    resolve with
-  | .error e => e == "no record 12"
+def lookup (table : List (Nat × String)) (n : Nat) : Except String String :=
+  match table.lookup n with
+  | some s => .ok s
+  | none => .error s!"no entry {n}"
+
+#guard entry.map toString ==
+  { key := "1", trees := #[.node (.leaf "2") (.leaf "3")], counts := [("4", 7)], note := none }
+
+def table : List (Nat × String) := [(1, "one"), (2, "two"), (3, "three"), (4, "four")]
+
+#guard (entry.mapM (lookup table)).toOption ==
+  some { key := "one", trees := #[.node (.leaf "two") (.leaf "three")], counts := [("four", 7)], note := none }
+#guard match entry.mapM (lookup (table.take 2)) with
+  | .error e => e == "no entry 3"
   | .ok _ => false
 
 end Readme
 
-/-! `deriving LawfulMapM` proves the laws, for the shapes above that hold the parameter, and derives
-`MapM` first where the type does not. -/
+/-! `deriving LawfulMapM` proves the laws, for the shapes above that hold the parameter.  It needs
+`deriving MapM` before it. -/
 
 namespace Lawful
 
