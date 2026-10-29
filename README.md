@@ -29,16 +29,16 @@ def resolve (n : Nat) : Except String String := if n < 10 then .ok s!"#{n}" else
 
 ## Using it
 
-Add it to your `lakefile.toml` (the URL is a placeholder until the repository is published):
+Add it to your `lakefile.toml` (the tag `v0.1.0` will be made when the repository is published):
 
 ```toml
 [[require]]
 name = "DeriveMapM"
-git = "https://example.invalid/derive-mapm"
-rev = "main"
+git = "https://github.com/matthiasgoergens/derive-mapm"
+rev = "v0.1.0"
 ```
 
-or, in a `lakefile.lean`, `require DeriveMapM from git "https://example.invalid/derive-mapm" @ "main"`.  Then `import DeriveMapM`.  Write `open DeriveMapM (MapM LawfulMapM)` before a `deriving` clause that names them, or write `deriving DeriveMapM.MapM`.
+or, in a `lakefile.lean`, `require DeriveMapM from git "https://github.com/matthiasgoergens/derive-mapm" @ "v0.1.0"`.  Then `import DeriveMapM`.  Write `open DeriveMapM (MapM LawfulMapM)` before a `deriving` clause that names them, or write `deriving DeriveMapM.MapM`.
 
 The package is built and tested with Lean v4.35.0 (`lean-toolchain`); `lake test` runs the tests in `DeriveMapM/Test.lean`.  It has not been tried with other versions.
 
@@ -91,3 +91,7 @@ The handler refuses, with an error that names the field and the reason:
 ## Prior art
 
 Mathlib's [`Mathlib/Tactic/DeriveTraversable.lean`](https://github.com/leanprover-community/mathlib4/blob/master/Mathlib/Tactic/DeriveTraversable.lean) derives `Functor`, `Traversable` and their lawful versions, building the definitions as expressions and mapping nested fields through `Functor` instances.  It depends on Mathlib's `Traversable` hierarchy.  DeriveMapM covers the same ground for users who do not depend on Mathlib, generates syntax rather than expressions (as core's own deriving handlers do), maps through pairs, and writes the definitions so that `simp [T.map]` unfolds them.
+
+## Licence
+
+Apache-2.0; see `LICENSE`.
